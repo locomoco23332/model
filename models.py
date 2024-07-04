@@ -1335,13 +1335,13 @@ class TDGAVAE(nn.Module):
         # if using the positional encoding.....
         #z=torch.cat((za1,za2,za3),dim=1)
         z=torch.cat((z11,z12,z13),dim=1)
-        diff1=self.diffusion(z,t10)
+        diff1=self.diffusion(z,z11)
         z=torch.cat((z,diff1),dim=1)
         out = self.decoder1(z, t3, t4, t5, t6, t7)
         out = out.view(-1, self.output_numframe1, self.output_size1)
        # print(out[:, 1, :].shape)
         z2, mu2, logvar2 = self.encoder2(out[:, 0, :], out[:, 1, :], out[:, 2, :], out[:, 3, :], out[:, 4, :])
-        diff2=self.diffusion(z2,out[:,4,:])
+        #diff2=self.diffusion(z2,out[:,4,:])
         z2=torch.cat((z2,diff2),dim=1)
         return self.decoder2(z2, out[:, 1, :], out[:, 2, :], out[:, 3, :]), mu2, logvar2
 
