@@ -287,6 +287,36 @@ class TimeEmbedding(nn.Module):
         return emb
 
 
+class TimeEmbedding(nn.Module):
+    def __init__(self, n):
+        super(TimeEmbedding, self).__init__()
+        self.n = n
+        self.fc1 = nn.Linear(n, n)
+        self.fc2 = nn.Linear(n, n)
+
+    def activation(self, x):
+        return x * torch.sigmoid(x)
+
+    def forward(self, t):
+        # Ensure t is a tensor
+        #if isinstance(t, int) or isinstance(t, float):
+            #t = torch.tensor([t], dtype=torch.float32, device='cuda')
+        #elif isinstance(t, torch.Tensor):
+            #t = t.to('cuda')
+
+        half_dim = self.n // 2
+        emb = torch.log(torch.tensor(1000.0, device='cuda') / (half_dim - 1))
+        emb = torch.exp(torch.arange(half_dim, device='cuda') * -emb)
+        emb = t * emb
+        emb = torch.cat((emb.sin(), emb.cos()), dim=1)
+        #emb = torch.stack((emb, emb))
+
+
+        emb = self.activation(self.fc1(emb))
+        emb = self.fc2(emb)
+        return emb
+
+
 class DenoiseDiffusion(nn.Module):
     def __init__(self, input_size, output_size, noise_steps):
         super().__init__()
@@ -294,6 +324,58 @@ class DenoiseDiffusion(nn.Module):
         self.output_size = output_size
         self.noise_steps = noise_steps
         self.hidden_size = 108
+        self.time_dim = self.hidden_size
+        self.gaussiandiffusion = GaussianDiffusion(self.input_size, self.noise_steps, self.output_size)
+        self.timeembedding = TimeEmbedding(self.time_dim)
+        self.betas = self.gaussiandiffusion.beta
+        self.alpha = 1 - self.betas
+        self.alpha_bar = torch.cumprod(self.alpha, dim=0)
+
+        self.fc1 = nn.Linear(input_size, self.hidden_size)
+        self.fc2 = nn.Linear(self.hidden_size + self.time_dim, self.hidden_size)
+        self.fc3 = nn.Linear(self.hidden_size + self.time_dim, self.hidden_size)
+        self.fc4 = nn.Linear(self.hidden_size + self.time_dim, self.output_size)
+
+    def q_xt_x0(self, x0, t):
+        mean = self.gaussiandiffusion.alpha_hat
+        mean = self.gaussiandiffusion.alpha_hat[t] ** 0.5 * x0
+        var = 1 - self.gaussiandiffusion.alpha_hat[t]
+        return mean, var
+
+    def q_sample(self, x0, t, eps):
+        if eps is None:
+            eps = torch.randn_like(x0)
+        mean, var = self.q_xt_x0(x0, t)
+        return mean + (var ** 0.5) * eps
+
+    def p_sample(self, xt, t):
+        eps_theta = self.forward(xt, t)
+        alpha_hat = self.gaussiandiffusion.alpha_hat[t]
+        alpha = self.gaussiandiffusion.alpha[t]
+        eps_coef = (1 - alpha) / (1 - alpha_hat) ** 0.5
+        mean = 1 / (alpha ** 0.5) * (xt - eps_coef * eps_theta)
+        var = self.gaussiandiffusion.beta[t]
+        eps = torch.randn_like(xt)
+        return mean + (var ** 0.5) * eps
+
+    def forward(self, xt, t):
+        t = self.timeembedding(t)
+        emb = self.fc1(xt)
+        emb = torch.cat((emb, t), dim=1)
+        emb = F.elu(self.fc2(emb))
+        emb = torch.cat((emb, t), dim=1)
+        emb = F.elu(self.fc3(emb))
+        emb = torch.cat((emb, t), dim=1)
+        emb = F.elu(self.fc4(emb))
+        return emb
+
+class DenoiseDiffusion2(nn.Module):
+    def __init__(self, input_size, output_size, noise_steps2):
+        super().__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.noise_steps = noise_steps2
+        self.hidden_size = 270
         self.time_dim = self.hidden_size
         self.gaussiandiffusion = GaussianDiffusion(self.input_size, self.noise_steps, self.output_size)
         self.timeembedding = TimeEmbedding(self.time_dim)
@@ -1136,6 +1218,48 @@ class P2Decoder(nn.Module):
         out3 = self.fc3(F.elu(torch.cat((out2, z), dim=1)))
         out4 = self.fc4(F.elu(torch.cat((out3, z), dim=1)))
         return self.fc5(torch.cat((out4, z), dim=1))
+class P3Decoder(nn.Module):
+    def __init__(self, latent_size2,latent_size, tracker_size, hidden_size, output_size):
+        super().__init__()
+        self.tracker_size = tracker_size
+        self.input_size = latent_size2 + self.tracker_size * 3
+        self.output_size = output_size
+        self.latent_size = latent_size
+        self.hidden_size = hidden_size
+        self.fc1 = nn.Linear(self.input_size, self.hidden_size)
+        self.fc2 = nn.Linear(self.hidden_size + self.latent_size, self.hidden_size)
+        self.fc3 = nn.Linear(self.hidden_size + self.latent_size, self.hidden_size)
+        self.fc4 = nn.Linear(self.hidden_size + self.latent_size, self.hidden_size)
+        self.fc5 = nn.Linear(self.hidden_size + self.latent_size, self.output_size)
+
+    def forward(self, z, t1, t2, t3):
+        #print(self.tracker_size)
+        out1 = self.fc1(F.elu(torch.cat((z, t1, t2, t3), dim=1)))
+        out2 = self.fc2(F.elu(torch.cat((out1, z), dim=1)))
+        out3 = self.fc3(F.elu(torch.cat((out2, z), dim=1)))
+        out4 = self.fc4(F.elu(torch.cat((out3, z), dim=1)))
+        return self.fc5(torch.cat((out4, z), dim=1))
+class P2TDecoder(nn.Module):
+    def __init__(self, latent_size2,latent_size, tracker_size, hidden_size, output_size):
+        super().__init__()
+        self.tracker_size = tracker_size
+        self.input_size = latent_size2 + self.tracker_size * 3
+        self.output_size = output_size
+        self.latent_size = latent_size
+        self.hidden_size = hidden_size
+        self.fc1 = nn.Linear(self.input_size, self.hidden_size)
+        self.fc2 = nn.Linear(self.hidden_size + latent_size, self.hidden_size)
+        self.fc3 = nn.Linear(self.hidden_size + latent_size, self.hidden_size)
+        self.fc4 = nn.Linear(self.hidden_size + latent_size, self.hidden_size)
+        self.fc5 = nn.Linear(self.hidden_size + latent_size, self.output_size)
+
+    def forward(self, z, t1, t2, t3):
+        #print(self.tracker_size)
+        out1 = self.fc1(F.elu(torch.cat((z, t1, t2, t3), dim=1)))
+        out2 = self.fc2(F.elu(torch.cat((out1, z), dim=1)))
+        out3 = self.fc3(F.elu(torch.cat((out2, z), dim=1)))
+        out4 = self.fc4(F.elu(torch.cat((out3, z), dim=1)))
+        return self.fc5(torch.cat((out4, z), dim=1))
 
 class GAVAE(nn.Module):
     def __init__(self, tracker_size, encode_hidden_size, latent_size,latent_size2, decode_hidden_size, output_size1, output_numframe1, output_size2, output_numframe2):
@@ -1245,9 +1369,10 @@ class TGAVAE(nn.Module):
         self.encoder12=P12Encoder(tracker_size,encode_hidden_size,latent_size)
         self.encoder13=P13Encoder(tracker_size,encode_hidden_size,latent_size)
         self.diffusion=DenoiseDiffusion(3*latent_size,latent_size,noise_steps=10000)
-        self.decoder1 = P1Decoder(latent_size*4, tracker_size, decode_hidden_size, output_size1 * output_numframe1)
+        self.decoder1 = P1Decoder(latent_size*5, tracker_size, decode_hidden_size, output_size1 * output_numframe1)
         self.encoder2 = P2Encoder(output_size1, encode_hidden_size, latent_size)
-        self.decoder2 = P2Decoder(latent_size2,latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
+        self.decoder2 = P2Decoder(latent_size2*3,latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
+        self.decoder3 = P3Decoder(latent_size2*3,3*latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
         self.a1=nn.Parameter(torch.tensor(0.2))
         self.a2=nn.Parameter(torch.tensor(0.3))
         self.a3=nn.Parameter(torch.tensor(0.5))
@@ -1302,9 +1427,12 @@ class TDGAVAE(nn.Module):
         self.encoder12=P12Encoder(tracker_size,encode_hidden_size,latent_size)
         self.encoder13=P13Encoder(tracker_size,encode_hidden_size,latent_size)
         self.diffusion=DenoiseDiffusion(3*latent_size,latent_size,noise_steps=10000)
-        self.decoder1 = P1Decoder(latent_size*4, tracker_size, decode_hidden_size, output_size1 * output_numframe1)
+        self.diffusion2=DenoiseDiffusion2(latent_size,latent_size,noise_steps2=10000)
+        self.decoder1 = P1Decoder(latent_size*5, tracker_size, decode_hidden_size, output_size1 * output_numframe1)
         self.encoder2 = P2Encoder(output_size1, encode_hidden_size, latent_size)
-        self.decoder2 = P2Decoder(latent_size2*2,latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
+        self.decoder2 = P2Decoder(latent_size2,latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
+        self.decoder3 = P3Decoder(latent_size2 * 3, latent_size*3, tracker_size, decode_hidden_size,
+                                  output_size2 * output_numframe2)
         self.a1=nn.Parameter(torch.tensor(0.2))
         self.a2=nn.Parameter(torch.tensor(0.3))
         self.a3=nn.Parameter(torch.tensor(0.5))
@@ -1335,15 +1463,20 @@ class TDGAVAE(nn.Module):
         # if using the positional encoding.....
         #z=torch.cat((za1,za2,za3),dim=1)
         z=torch.cat((z11,z12,z13),dim=1)
-        diff1=self.diffusion(z,z11)
-        z=torch.cat((z,diff1),dim=1)
+        diff11=self.diffusion(z,t10)
+        diff12=self.diffusion(z,t1)
+        z=torch.cat((z,diff11),dim=1)
+        z=torch.cat((z,diff12),dim=1)
         out = self.decoder1(z, t3, t4, t5, t6, t7)
         out = out.view(-1, self.output_numframe1, self.output_size1)
        # print(out[:, 1, :].shape)
         z2, mu2, logvar2 = self.encoder2(out[:, 0, :], out[:, 1, :], out[:, 2, :], out[:, 3, :], out[:, 4, :])
-        #diff2=self.diffusion(z2,out[:,4,:])
-        z2=torch.cat((z2,diff2),dim=1)
-        return self.decoder2(z2, out[:, 1, :], out[:, 2, :], out[:, 3, :]), mu2, logvar2
+        diff21=self.diffusion2(z2,out[:,4,:])
+        diff22=self.diffusion2(z2,out[:,0,:])
+        z2=torch.cat((z2,diff21),dim=1)
+        z2=torch.cat((z2,diff22),dim=1)
+        #print(z2.shape)
+        return self.decoder3(z2, out[:, 1, :], out[:, 2, :], out[:, 3, :]), mu2, logvar2
 
     def sample(self, z, t1, t3, t5, t7, t9):
         return self.decoder(z, t1, t3, t5, t7, t9)
