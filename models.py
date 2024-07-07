@@ -1424,10 +1424,11 @@ class TDGAVAE(nn.Module):
         self.output_numframe1 = output_numframe1
         self.output_numframe2 = output_numframe2
         self.encoder1 = P1Encoder(tracker_size, encode_hidden_size, latent_size)
-        self.encoder12=P12Encoder(tracker_size,encode_hidden_size,latent_size)
-        self.encoder13=P13Encoder(tracker_size,encode_hidden_size,latent_size)
-        self.diffusion=DenoiseDiffusion(3*latent_size,latent_size,noise_steps=10000)
-        self.diffusion2=DenoiseDiffusion2(latent_size,latent_size,noise_steps2=10000)
+        self.encoder12 = P12Encoder(tracker_size,encode_hidden_size,latent_size)
+        self.encoder13 = P13Encoder(tracker_size,encode_hidden_size,latent_size)
+        self.diffusion = DenoiseDiffusion(3*latent_size,latent_size,noise_steps=10000)
+        self.diffusion2 = DenoiseDiffusion2(latent_size,latent_size,noise_steps2=10000)
+        self.gruflow=nn.GRU(latent_size*5,latent_size*5,num_layers=1,batch_first=True)
         self.decoder1 = P1Decoder(latent_size*5, tracker_size, decode_hidden_size, output_size1 * output_numframe1)
         self.encoder2 = P2Encoder(output_size1, encode_hidden_size, latent_size)
         self.decoder2 = P2Decoder(latent_size2,latent_size, tracker_size, decode_hidden_size, output_size2 * output_numframe2)
@@ -1467,7 +1468,10 @@ class TDGAVAE(nn.Module):
         diff12=self.diffusion(z,t1)
         z=torch.cat((z,diff11),dim=1)
         z=torch.cat((z,diff12),dim=1)
-        out = self.decoder1(z, t3, t4, t5, t6, t7)
+        z = z.unsqueeze(1)  # Adding a dimension for the GRU
+        gru_out, _ = self.gru(z)
+        gru_out = gru_out.squeeze(1)  # Removing the added dimension
+        out = self.decoder1(gru_out, t3, t4, t5, t6, t7)
         out = out.view(-1, self.output_numframe1, self.output_size1)
        # print(out[:, 1, :].shape)
         z2, mu2, logvar2 = self.encoder2(out[:, 0, :], out[:, 1, :], out[:, 2, :], out[:, 3, :], out[:, 4, :])
